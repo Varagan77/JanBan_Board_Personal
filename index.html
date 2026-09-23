@@ -119,8 +119,7 @@ body::before{
   cursor:pointer;
 }
 #add-tab-btn:hover{background:rgba(255,154,60,0.08);border-color:var(--term-green);}
-#import-md-btn{
-  margin-top:auto;
+#export-md-btn,#import-md-btn{
   background:rgba(255,255,255,0.02);
   border:1px solid var(--line);
   color:var(--text-dim);
@@ -130,7 +129,8 @@ body::before{
   font-size:12px;
   cursor:pointer;
 }
-#import-md-btn:hover{border-color:var(--line-hover);color:var(--term-green);}
+#export-md-btn{margin-top:auto;}
+#export-md-btn:hover,#import-md-btn:hover{border-color:var(--line-hover);color:var(--term-green);}
 
 /* MAIN */
 #main{flex:1;padding:26px 30px;overflow-x:auto;position:relative;}
@@ -242,7 +242,7 @@ body::before{
   box-shadow:0 0 0 1px var(--term-green);
 }
 .btn-term{background:var(--term-green);color:#04140c;border:none;font-family:var(--font-mono);font-weight:700;letter-spacing:1px;}
-.btn-term:hover{background:#5dffb4;color:#04140c;}
+.btn-term:hover{background:#ffb567;color:#04140c;}
 </style>
 </head>
 <body>
@@ -252,6 +252,7 @@ body::before{
   <div class="sb-sub">// select a workspace</div>
   <div id="tab-list"></div>
   <button id="add-tab-btn" onclick="OPEN_ADD_TAB_MODAL()"><i class="fa-solid fa-plus"></i> new_tab</button>
+  <button id="export-md-btn" onclick="EXPORT_ACTIVE_BOARD()"><i class="fa-solid fa-file-export"></i> export .md</button>
   <button id="import-md-btn" onclick="document.getElementById('md-file-input').click()"><i class="fa-solid fa-file-arrow-up"></i> import .md</button>
   <input type="file" id="md-file-input" accept=".md" multiple style="display:none" onchange="HANDLE_MD_IMPORT(event)">
 </div>
@@ -518,6 +519,34 @@ function ESCAPE_ATTR(STR) {
   return STR.replace(/'/g, "\\'");
 }
 
+function BOARD_TO_MARKDOWN(NAME) {
+  const BOARD = BOARDS[NAME];
+  const SECTION_TITLES = { TODO: 'Todo', IN_PROGRESS: 'In Progress', DONE: 'Done' };
+  let OUT = `# ${NAME}\n\n`;
+  ['TODO', 'IN_PROGRESS', 'DONE'].forEach(STATUS => {
+    OUT += `## ${SECTION_TITLES[STATUS]}\n`;
+    (BOARD[STATUS] || []).forEach(CARD => {
+      const TAG_SUFFIX = (CARD.tags && CARD.tags.length) ? ` [${CARD.tags.join(', ')}]` : '';
+      OUT += `- ${CARD.title}${TAG_SUFFIX}\n`;
+      if (CARD.desc) OUT += `  ${CARD.desc.split('\n').join('\n  ')}\n`;
+    });
+    OUT += '\n';
+  });
+  return OUT;
+}
+
+async function EXPORT_ACTIVE_BOARD() {
+  if (!ACTIVE_TAB) { alert('No active board to export.'); return; }
+  const MARKDOWN = BOARD_TO_MARKDOWN(ACTIVE_TAB);
+  const DOWNLOADS = await claude.use('downloads');
+  if (!DOWNLOADS) { alert('File downloads are not available in this view.'); return; }
+  try {
+    await DOWNLOADS.save({ filename: `${ACTIVE_TAB}.md`, data: MARKDOWN });
+  } catch (ERR) {
+    alert('Export was cancelled or failed.');
+  }
+}
+
 function HANDLE_MD_IMPORT(EVENT) {
   const FILES = Array.from(EVENT.target.files || []);
   FILES.forEach(FILE => {
@@ -538,20 +567,27 @@ function PARSE_MARKDOWN_BOARD(TEXT) {
   const RESULT = { TODO: [], IN_PROGRESS: [], DONE: [] };
   const SECTION_MAP = { 'TODO': 'TODO', 'TO DO': 'TODO', 'IN PROGRESS': 'IN_PROGRESS', 'DONE': 'DONE' };
   let CURRENT = null;
+  let LAST_CARD = null;
   TEXT.split('\n').forEach(LINE => {
-    const HEADING_MATCH = LINE.match(/^#{1,3}\s*(.+)/);
+    const HEADING_MATCH = LINE.match(/^#{1,2}\s*(.+)/);
     if (HEADING_MATCH) {
       const KEY = HEADING_MATCH[1].trim().toUpperCase();
-      CURRENT = SECTION_MAP[KEY] || null;
+      if (SECTION_MAP[KEY]) { CURRENT = SECTION_MAP[KEY]; LAST_CARD = null; }
       return;
     }
-    const ITEM_MATCH = LINE.match(/^\s*[-*]\s*(?:\[[ xX]\]\s*)?(.+)/);
+    const ITEM_MATCH = LINE.match(/^[-*]\s*(?:\[[ xX]\]\s*)?(.+)/);
     if (ITEM_MATCH && CURRENT) {
       const RAW = ITEM_MATCH[1].trim();
       const TAG_MATCH = RAW.match(/^(.*?)\s*\[(.+)\]\s*$/);
       let TITLE = RAW, TAGS = [];
       if (TAG_MATCH) { TITLE = TAG_MATCH[1].trim(); TAGS = TAG_MATCH[2].split(',').map(T => T.trim()).filter(Boolean); }
-      RESULT[CURRENT].push({ id: GENERATE_ID(), title: TITLE, tags: TAGS, desc: '' });
+      LAST_CARD = { id: GENERATE_ID(), title: TITLE, tags: TAGS, desc: '' };
+      RESULT[CURRENT].push(LAST_CARD);
+      return;
+    }
+    const DESC_MATCH = LINE.match(/^\s{2,}(.+)/);
+    if (DESC_MATCH && LAST_CARD) {
+      LAST_CARD.desc = LAST_CARD.desc ? `${LAST_CARD.desc}\n${DESC_MATCH[1]}` : DESC_MATCH[1];
     }
   });
   return RESULT;
