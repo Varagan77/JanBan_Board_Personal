@@ -252,7 +252,7 @@ body::before{
   <div class="sb-sub">// select a workspace</div>
   <div id="tab-list"></div>
   <button id="add-tab-btn" onclick="OPEN_ADD_TAB_MODAL()"><i class="fa-solid fa-plus"></i> new_tab</button>
-  <button id="export-md-btn" onclick="EXPORT_ACTIVE_BOARD()"><i class="fa-solid fa-file-export"></i> export .md</button>
+  <button id="export-md-btn" onclick="EXPORT_ACTIVE_BOARD()"><i class="fa-solid fa-file-export"></i> export to obsidian</button>
   <button id="import-md-btn" onclick="document.getElementById('md-file-input').click()"><i class="fa-solid fa-file-arrow-up"></i> import .md</button>
   <input type="file" id="md-file-input" accept=".md" multiple style="display:none" onchange="HANDLE_MD_IMPORT(event)">
 </div>
@@ -333,7 +333,10 @@ body::before{
    TODO, IN_PROGRESS AND DONE. EACH CARD HOLDS A TITLE, TAGS AND A
    DESCRIPTION. BOARDS PERSIST IN LOCALSTORAGE AND CAN ALSO BE
    IMPORTED FROM MARKDOWN FILES, WHERE EACH .MD FILE BECOMES ITS OWN
-   TAB. TABS AND CARDS CAN BE DELETED WITH A CONFIRMATION, AND CARDS
+   TAB. BOARDS CAN BE EXPORTED AS MARKDOWN FILES FORMATTED FOR THE
+   OBSIDIAN KANBAN PLUGIN (FRONTMATTER, LANE HEADINGS, CHECKBOX
+   ITEMS AND HASHTAG TAGS) SO THEY CAN BE OPENED DIRECTLY IN OBSIDIAN.
+   TABS AND CARDS CAN BE DELETED WITH A CONFIRMATION, AND CARDS
    CAN BE DRAGGED BETWEEN COLUMNS TO CHANGE THEIR STATUS.
    ===================================================================== */
 
@@ -521,17 +524,27 @@ function ESCAPE_ATTR(STR) {
 
 function BOARD_TO_MARKDOWN(NAME) {
   const BOARD = BOARDS[NAME];
-  const SECTION_TITLES = { TODO: 'Todo', IN_PROGRESS: 'In Progress', DONE: 'Done' };
-  let OUT = `# ${NAME}\n\n`;
-  ['TODO', 'IN_PROGRESS', 'DONE'].forEach(STATUS => {
-    OUT += `## ${SECTION_TITLES[STATUS]}\n`;
-    (BOARD[STATUS] || []).forEach(CARD => {
-      const TAG_SUFFIX = (CARD.tags && CARD.tags.length) ? ` [${CARD.tags.join(', ')}]` : '';
-      OUT += `- ${CARD.title}${TAG_SUFFIX}\n`;
-      if (CARD.desc) OUT += `  ${CARD.desc.split('\n').join('\n  ')}\n`;
+  const LANES = [
+    { STATUS: 'TODO', TITLE: 'Todo', CHECKED: false },
+    { STATUS: 'IN_PROGRESS', TITLE: 'In Progress', CHECKED: false },
+    { STATUS: 'DONE', TITLE: 'Done', CHECKED: true }
+  ];
+  let OUT = `---\n\nkanban-plugin: board\n\n---\n\n`;
+  LANES.forEach(LANE => {
+    OUT += `## ${LANE.TITLE}\n\n`;
+    (BOARD[LANE.STATUS] || []).forEach(CARD => {
+      const BOX = LANE.CHECKED ? 'x' : ' ';
+      const TAG_SUFFIX = (CARD.tags && CARD.tags.length)
+        ? ' ' + CARD.tags.map(T => '#' + T.replace(/\s+/g, '-')).join(' ')
+        : '';
+      OUT += `- [${BOX}] ${CARD.title}${TAG_SUFFIX}\n`;
+      if (CARD.desc) {
+        CARD.desc.split('\n').forEach(LINE => { OUT += `  ${LINE}\n`; });
+      }
     });
     OUT += '\n';
   });
+  OUT += `\n%% kanban:settings\n\`\`\`\n{"kanban-plugin":"board"}\n\`\`\`\n%%`;
   return OUT;
 }
 
@@ -569,18 +582,25 @@ function PARSE_MARKDOWN_BOARD(TEXT) {
   let CURRENT = null;
   let LAST_CARD = null;
   TEXT.split('\n').forEach(LINE => {
+    if (/^%%/.test(LINE) || /^kanban-plugin/.test(LINE) || /^---\s*$/.test(LINE)) { return; }
     const HEADING_MATCH = LINE.match(/^#{1,2}\s*(.+)/);
     if (HEADING_MATCH) {
       const KEY = HEADING_MATCH[1].trim().toUpperCase();
       if (SECTION_MAP[KEY]) { CURRENT = SECTION_MAP[KEY]; LAST_CARD = null; }
       return;
     }
-    const ITEM_MATCH = LINE.match(/^[-*]\s*(?:\[[ xX]\]\s*)?(.+)/);
-    if (ITEM_MATCH && CURRENT) {
-      const RAW = ITEM_MATCH[1].trim();
-      const TAG_MATCH = RAW.match(/^(.*?)\s*\[(.+)\]\s*$/);
-      let TITLE = RAW, TAGS = [];
-      if (TAG_MATCH) { TITLE = TAG_MATCH[1].trim(); TAGS = TAG_MATCH[2].split(',').map(T => T.trim()).filter(Boolean); }
+    const CHECKBOX_MATCH = LINE.match(/^[-*]\s*\[([ xX])\]\s*(.+)/);
+    const PLAIN_ITEM_MATCH = !CHECKBOX_MATCH && LINE.match(/^[-*]\s*(.+)/);
+    if ((CHECKBOX_MATCH || PLAIN_ITEM_MATCH) && CURRENT) {
+      let RAW = (CHECKBOX_MATCH ? CHECKBOX_MATCH[2] : PLAIN_ITEM_MATCH[1]).trim();
+      const HASHTAGS = [];
+      RAW = RAW.replace(/#([^\s#]+)/g, (M, T) => { HASHTAGS.push(T.replace(/-/g, ' ')); return ''; }).trim();
+      let TITLE = RAW, TAGS = HASHTAGS;
+      const BRACKET_MATCH = RAW.match(/^(.*?)\s*\[(.+)\]\s*$/);
+      if (!HASHTAGS.length && BRACKET_MATCH) {
+        TITLE = BRACKET_MATCH[1].trim();
+        TAGS = BRACKET_MATCH[2].split(',').map(T => T.trim()).filter(Boolean);
+      }
       LAST_CARD = { id: GENERATE_ID(), title: TITLE, tags: TAGS, desc: '' };
       RESULT[CURRENT].push(LAST_CARD);
       return;
